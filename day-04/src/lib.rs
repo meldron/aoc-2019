@@ -1,3 +1,4 @@
+#[allow(dead_code)]
 #[inline]
 pub fn number_to_digits(i: usize) -> Vec<u8> {
     let mut v = Vec::new();
