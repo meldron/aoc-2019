@@ -22,7 +22,9 @@ pub enum OpCode {
         p2_mode: Mode,
         p3_mode: Mode,
     },
-    Input,
+    Input {
+        p1_mode: Mode,
+    },
     Output {
         p1_mode: Mode,
     },
@@ -43,6 +45,9 @@ pub enum OpCode {
         p1_mode: Mode,
         p2_mode: Mode,
         p3_mode: Mode,
+    },
+    AdjustRelativeBase {
+        p1_mode: Mode,
     },
     End,
     Unknown,
@@ -76,7 +81,7 @@ impl OpCode {
                 p2_mode,
                 p3_mode,
             },
-            3 => OpCode::Input,
+            3 => OpCode::Input { p1_mode },
             4 => OpCode::Output { p1_mode },
             5 => OpCode::JumpIfTrue { p1_mode, p2_mode },
             6 => OpCode::JumpIfFalse { p1_mode, p2_mode },
@@ -90,6 +95,7 @@ impl OpCode {
                 p2_mode,
                 p3_mode,
             },
+            9 => OpCode::AdjustRelativeBase { p1_mode },
             99 => OpCode::End,
             _ => OpCode::Unknown,
         }
@@ -106,6 +112,8 @@ pub struct IntCode {
     done: bool,
     outputs: Vec<i64>,
     op_codes: Vec<OpCode>,
+    rb_history: Vec<isize>,
+    ignore_outputs: bool,
 }
 
 impl IntCode {
@@ -119,6 +127,8 @@ impl IntCode {
             done: false,
             outputs: Vec::new(),
             op_codes: Vec::new(),
+            rb_history: Vec::new(),
+            ignore_outputs: false,
         }
     }
 
@@ -142,6 +152,10 @@ impl IntCode {
     }
 
     pub fn run(&mut self) -> Result<i64, String> {
+        if self.done {
+            return Err("can only be run once".to_owned());
+        }
+
         let mut last_output: Option<i64> = None;
 
         loop {
@@ -152,7 +166,7 @@ impl IntCode {
             }
 
             if let Some(lo) = last_output {
-                if lo != 0 {
+                if !self.ignore_outputs && lo != 0 {
                     return Err(format!("last output != 0: ip: {} lo: {}", self.ip, lo).to_owned());
                 }
             }
@@ -166,6 +180,12 @@ impl IntCode {
             .map(|o| *o)
     }
 
+    fn adjust_relative_base(&self, mode: Mode, offset: usize) -> Result<isize, String> {
+        let adjust_with = self.get_value_for_mode(mode, offset)? as isize;
+
+        Ok(self.rb + adjust_with)
+    }
+
     fn step(&mut self) -> Result<Option<i64>, String> {
         let op_code_val = self
             .state
@@ -174,6 +194,7 @@ impl IntCode {
         let op_code = OpCode::from_i64(*op_code_val);
 
         let mut output: Option<i64> = None;
+        let mut new_rb: Option<isize> = None;
 
         match op_code {
             OpCode::End => {
@@ -181,9 +202,12 @@ impl IntCode {
                 return Ok(None);
             }
             OpCode::Output { p1_mode } => {
-                let o = self.get_value_for_mode(p1_mode, self.ip + 1)?;
+                let o = self.get_value_for_mode(p1_mode, 1)?;
                 self.outputs.push(o);
                 output = Some(o);
+            }
+            OpCode::AdjustRelativeBase { p1_mode } => {
+                new_rb = Some(self.adjust_relative_base(p1_mode, 1)?);
             }
             OpCode::Unknown => return Err("Unknown opcode".to_owned()),
             _ => (),
@@ -222,11 +246,16 @@ impl IntCode {
                     0
                 }
             })?,
-            OpCode::Input => self.use_input_for_next_state(self.ip + 1)?,
+            OpCode::Input { p1_mode } => self.use_input_for_next_state(*p1_mode, 1)?,
             _ => self.state.to_owned(),
         };
 
         let next_ip = self.calc_next_ip(&op_code)?;
+
+        if let Some(nrb) = new_rb {
+            self.rb_history.push(self.rb);
+            self.rb = nrb;
+        }
 
         self.state = next_state;
         self.ip = next_ip;
@@ -242,7 +271,9 @@ impl IntCode {
             | OpCode::Mut { .. }
             | OpCode::LessThan { .. }
             | OpCode::Equals { .. } => self.ip + 4,
-            OpCode::Input | OpCode::Output { .. } => self.ip + 2,
+            OpCode::Input { .. } | OpCode::Output { .. } | OpCode::AdjustRelativeBase { .. } => {
+                self.ip + 2
+            }
             OpCode::JumpIfFalse { p1_mode, p2_mode } => {
                 self.conditional_jump(*p1_mode, *p2_mode, false)?
             }
@@ -261,8 +292,8 @@ impl IntCode {
         p2_mode: Mode,
         jump_if_true: bool,
     ) -> Result<usize, String> {
-        let val1: i64 = self.get_value_for_mode(p1_mode, self.ip + 1)?;
-        let val2: i64 = self.get_value_for_mode(p2_mode, self.ip + 2)?;
+        let val1: i64 = self.get_value_for_mode(p1_mode, 1)?;
+        let val2: i64 = self.get_value_for_mode(p2_mode, 2)?;
 
         let do_jump = if jump_if_true { val1 != 0 } else { val1 == 0 };
 
@@ -275,21 +306,8 @@ impl IntCode {
         Ok(self.ip + 3)
     }
 
-    fn use_input_for_next_state(&self, pos: usize) -> Result<Vec<i64>, String> {
-        let mut next_state = self.state.to_owned();
-
-        let target_pos = usize::try_from(
-            *self
-                .state
-                .get(pos)
-                .ok_or_else(|| "target_pos error".to_owned())?,
-        )
-        .map_err(|e| e.to_string())?;
-
-        next_state
-            .get_mut(target_pos)
-            .map(|v| *v = self.input_value)
-            .ok_or_else(|| "target_pos write error".to_owned())?;
+    fn use_input_for_next_state(&self, mode: Mode, offset: usize) -> Result<Vec<i64>, String> {
+        let next_state = self.set_value_for_mode(mode, offset, self.input_value)?;
 
         Ok(next_state)
     }
@@ -305,56 +323,26 @@ impl IntCode {
             return Err("p3_mode is immediate".to_owned());
         }
 
-        let mut next_state = self.state.to_owned();
-        let val1: i64 = self.get_value_for_mode(p1_mode, self.ip + 1)?;
-        let val2: i64 = self.get_value_for_mode(p2_mode, self.ip + 2)?;
+        let val1: i64 = self.get_value_for_mode(p1_mode, 1)?;
+        let val2: i64 = self.get_value_for_mode(p2_mode, 2)?;
 
         let new_value = f(val1, val2);
 
-        let target_pos = usize::try_from(
-            *self
-                .state
-                .get(self.ip + 3)
-                .ok_or_else(|| "target_pos error".to_owned())?,
-        )
-        .map_err(|e| e.to_string())?;
-
-        next_state
-            .get_mut(target_pos)
-            .map(|v| *v = new_value)
-            .ok_or_else(|| "target_pos write error".to_owned())?;
+        let next_state = self.set_value_for_mode(p3_mode, 3, new_value)?;
 
         Ok(next_state)
     }
 
     fn set_value_for_mode(
-        state: &[i64],
+        &self,
         mode: Mode,
-        pos: usize,
-        rb: isize,
+        offset: usize,
         new_value: i64,
     ) -> Result<Vec<i64>, String> {
-        let mut next_state = state.to_owned();
+        let mut next_state = self.state.to_owned();
+        let pos = self.ip + offset;
 
-        let target_pos: usize = match mode {
-            Mode::Position => usize::try_from(
-                *state
-                    .get(pos)
-                    .ok_or_else(|| "target_pos error".to_owned())?,
-            )
-            .map_err(|e| e.to_string())?,
-            Mode::Relative => {
-                let offset = *state
-                    .get(pos)
-                    .ok_or_else(|| "Relative pos_translated error".to_owned())?;
-
-                let relative_pos = rb + offset as isize;
-
-                usize::try_from(relative_pos).map_err(|e| e.to_string())?
-            }
-
-            _ => unreachable!("illegal mode for set_value_for_mode"),
-        };
+        let target_pos: usize = self.get_target_pos(mode, pos)?;
 
         if target_pos >= next_state.len() {
             next_state.resize(target_pos + 1, 0);
@@ -369,16 +357,25 @@ impl IntCode {
     }
 
     // get value for a specific pos according to the mode
-    fn get_value_for_mode(&self, mode: Mode, pos: usize) -> Result<i64, String> {
-        let pos_translated: usize = match mode {
+    fn get_value_for_mode(&self, mode: Mode, offset: usize) -> Result<i64, String> {
+        let pos = self.ip + offset;
+
+        let pos_translated: usize = self.get_target_pos(mode, pos)?;
+
+        let v = *self.state.get(pos_translated).unwrap_or(&0);
+
+        Ok(v)
+    }
+
+    fn get_target_pos(&self, mode: Mode, pos: usize) -> Result<usize, String> {
+        let target_pos: usize = match mode {
             Mode::Position => usize::try_from(
                 *self
                     .state
                     .get(pos)
-                    .ok_or_else(|| "pos_translated error".to_owned())?,
+                    .ok_or_else(|| "target_pos error".to_owned())?,
             )
             .map_err(|e| e.to_string())?,
-            Mode::Immediate => pos,
             Mode::Relative => {
                 let offset = *self
                     .state
@@ -389,21 +386,42 @@ impl IntCode {
 
                 usize::try_from(relative_pos).map_err(|e| e.to_string())?
             }
+
+            _ => pos,
         };
 
-        let v = *self.state.get(pos_translated).unwrap_or(&0);
+        Ok(target_pos)
+    }
 
-        Ok(v)
+    pub fn set_ignore_outputs(&mut self, v: bool) {
+        self.ignore_outputs = v;
+    }
+
+    pub fn get_all_outputs(&self) -> &Vec<i64> {
+        self.outputs.as_ref()
+    }
+
+    pub fn get_steps(&self) -> usize {
+        self.steps
     }
 }
 
-static INPUT_PATH: &str = "input/input_5.txt";
+static INPUT_PATH: &str = "input/input.txt";
 
 fn main() -> Result<(), String> {
-    let mut int_code = IntCode::load(&PathBuf::from(INPUT_PATH), 5)?;
-    let output = int_code.run()?;
+    let mut int_code = IntCode::load(&PathBuf::from(INPUT_PATH), 1)?;
 
-    println!("Output: {}", output);
+    let output = int_code.run();
+
+    println!("Output 1): {}", output?);
+    println!("Steps 1): {}", int_code.get_steps());
+
+    let mut int_code_2 = IntCode::load(&PathBuf::from(INPUT_PATH), 2)?;
+
+    let output_2 = int_code_2.run();
+
+    println!("Output 2): {}", output_2?);
+    println!("Steps 2): {}", int_code_2.get_steps());
 
     Ok(())
 }
@@ -433,5 +451,41 @@ mod test {
                 p3_mode: Mode::Position
             }
         );
+    }
+
+    #[test]
+    fn test_program_quine() {
+        let state: Vec<i64> = vec![
+            109, 1, 204, -1, 1001, 100, 1, 100, 1008, 100, 16, 101, 1006, 101, 0, 99,
+        ];
+
+        let mut int_code = IntCode::new(
+            state.clone(),
+            0,
+        );
+
+        int_code.set_ignore_outputs(true);
+
+        let output = int_code.run();
+        assert!(output.is_ok());
+
+        let all_outputs = int_code.get_all_outputs();
+        assert_eq!(*all_outputs, state);
+    }
+
+    #[test]
+    fn test_program_middle() {
+        let mut int_code = IntCode::new(vec![104, 1_125_899_906_842_624, 99], 0);
+        let output = int_code.run();
+        assert!(output.is_ok());
+        assert_eq!(output.unwrap(), 1_125_899_906_842_624);
+    }
+
+    #[test]
+    fn test_program_16_digit() {
+        let mut int_code = IntCode::new(vec![1102, 34_915_192, 34_915_192, 7, 4, 7, 99, 0], 0);
+        let output = int_code.run();
+        assert!(output.is_ok());
+        assert_eq!(output.unwrap().to_string().len(), 16);
     }
 }
