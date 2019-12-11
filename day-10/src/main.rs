@@ -1,17 +1,17 @@
 use std::fs::read_to_string;
 use std::path::PathBuf;
 
-fn load_asteroids(path: &PathBuf) -> Result<Vec<(isize, isize)>, String> {
+fn load_asteroids(path: &PathBuf) -> Result<Vec<(usize, usize)>, String> {
     let input = read_to_string(path).map_err(|e| e.to_string())?;
 
     let raw: Vec<Vec<char>> = input.split('\n').map(|l| l.chars().collect()).collect();
 
-    let mut asteroids: Vec<(isize, isize)> = Vec::new();
+    let mut asteroids: Vec<(usize, usize)> = Vec::new();
 
     raw.iter().enumerate().for_each(|(y, l)| {
         l.iter().enumerate().for_each(|(x, c)| {
             if *c == '#' {
-                asteroids.push((x as isize, y as isize));
+                asteroids.push((x, y));
             }
         })
     });
@@ -19,8 +19,8 @@ fn load_asteroids(path: &PathBuf) -> Result<Vec<(isize, isize)>, String> {
     Ok(asteroids)
 }
 
-fn find_most_visible(asteroids: &[(isize, isize)]) -> ((isize, isize), usize) {
-    let mut best: Option<(isize, isize)> = None;
+fn find_most_visible(asteroids: &[(usize, usize)]) -> ((usize, usize), usize) {
+    let mut best: Option<(usize, usize)> = None;
     let mut max_visible = 0;
 
     asteroids.iter().for_each(|(p_x, p_y)| {
@@ -47,7 +47,7 @@ fn find_most_visible(asteroids: &[(isize, isize)]) -> ((isize, isize), usize) {
     (best.expect("no best found"), max_visible)
 }
 
-// fn create_station_map(asteroids: &[(isize, isize)], station: (isize, isize)) {}
+// fn create_station_map(asteroids: &[(usize, usize)], station: (usize, usize)) {}
 
 static INPUT_PATH: &str = "input/input.txt";
 
