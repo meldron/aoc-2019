@@ -1,6 +1,8 @@
 use std::fs::read_to_string;
 use std::path::PathBuf;
 
+use std::collections::HashMap;
+
 fn load_asteroids(path: &PathBuf) -> Result<Vec<(usize, usize)>, String> {
     let input = read_to_string(path).map_err(|e| e.to_string())?;
 
@@ -47,7 +49,39 @@ fn find_most_visible(asteroids: &[(usize, usize)]) -> ((usize, usize), usize) {
     (best.expect("no best found"), max_visible)
 }
 
-// fn create_station_map(asteroids: &[(usize, usize)], station: (usize, usize)) {}
+type Angle = isize;
+type Location = (usize, usize);
+type Distance = i32;
+
+fn manhattan_distance(p1: &Location, p2: &Location) -> i32 {
+    (p1.0 as i32 - p2.0 as i32).abs() + (p1.1 as i32 - p2.1 as i32).abs()
+}
+
+fn create_sorted_station_map(
+    asteroids: &[Location],
+    station: &Location,
+) -> HashMap<Angle, Vec<(Location, Distance)>> {
+    let mut map: HashMap<Angle, Vec<(Location, Distance)>> = HashMap::new();
+
+    asteroids
+        .iter()
+        .filter(|l| !(l.0 == station.0 && l.1 == station.1))
+        .for_each(|l| {
+            let dx = station.0 as f64 - l.0 as f64;
+            let dy = station.1 as f64 - l.1 as f64;
+
+            let angle: Angle = -(dx.atan2(dy).to_degrees() * 1000.0) as isize;
+            let distance = manhattan_distance(station, l);
+
+            map.entry(angle).or_default().push((*l, distance));
+        });
+
+    // sort map vector entries by distance desc so vector.pop returns closest entry
+    map.iter_mut()
+        .for_each(|(_a, v)| v.sort_by_key(|(_l, d)| -d));
+
+    map
+}
 
 static INPUT_PATH: &str = "input/input.txt";
 
@@ -57,5 +91,27 @@ fn main() -> Result<(), String> {
 
     println!("Most visible <{}> at <{:?}>", most_visible, station);
 
-    Ok(())
+    let mut map = create_sorted_station_map(&asteroids, &station);
+
+    let mut map_keys: Vec<isize> = map.keys().copied().collect();
+    map_keys.sort();
+
+    let it = map_keys
+        .iter()
+        .cycle()
+        .skip_while(|angle| **angle < 0)
+        .filter_map(|angle| map.get_mut(angle).and_then(|v| v.pop()).map(|(l, _)| l));
+
+    for (c, l) in it.enumerate() {
+        if c == 199 {
+            println!("200th is <{:?}>: {}", l, l.0 * 100 + l.1);
+            return Ok(());
+        }
+
+        if c > asteroids.len() {
+            return Err("too many iterations".to_owned());
+        }
+    }
+
+    Err("199 not found".to_owned())
 }
