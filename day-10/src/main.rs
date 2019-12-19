@@ -70,7 +70,10 @@ fn create_sorted_station_map(
             let dx = station.0 as f64 - l.0 as f64;
             let dy = station.1 as f64 - l.1 as f64;
 
-            let angle: Angle = -(dx.atan2(dy).to_degrees() * 1000.0) as isize;
+            // negative angel so we are iterating clockwise
+            // cast to isize so it can be used as hashmap key
+            // multiplying with 10000 should be enough floating decimals
+            let angle: Angle = -(dx.atan2(dy).to_degrees() * 10000.0) as isize;
             let distance = manhattan_distance(station, l);
 
             map.entry(angle).or_default().push((*l, distance));
@@ -96,6 +99,8 @@ fn main() -> Result<(), String> {
     let mut map_keys: Vec<isize> = map.keys().copied().collect();
     map_keys.sort();
 
+    // cycle iterator which every cycle first skips all angles < 0
+    // so the laser starts looking up (requirement)
     let it = map_keys
         .iter()
         .cycle()
@@ -109,9 +114,9 @@ fn main() -> Result<(), String> {
         }
 
         if c > asteroids.len() {
-            return Err("too many iterations".to_owned());
+            return Err("more laser iterations than available asteroids; 200 not found".to_owned());
         }
     }
 
-    Err("199 not found".to_owned())
+    unreachable!("iterator should never stop without stopping the program");
 }
